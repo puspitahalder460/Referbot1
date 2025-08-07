@@ -1,6 +1,6 @@
 from flask import Flask, request
-import requests
 import os
+import requests
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
@@ -8,12 +8,15 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Load Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 VERIFY_CHANNELS = os.getenv("VERIFY_CHANNELS", "").split(",")
-REWARD_AMOUNT = int(os.getenv("REWARD_AMOUNT", 2))
 MONGO_URI = os.getenv("MONGO_URI")
+REWARD_AMOUNT = int(os.getenv("REWARD_AMOUNT", 2))
+
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# MongoDB
 client = MongoClient(MONGO_URI)
 db = client["actualearn"]
 users = db["users"]
@@ -31,9 +34,9 @@ def send_message(chat_id, text, buttons=None):
 
 def is_user_in_channel(user_id, channel):
     url = f"{BASE_URL}/getChatMember"
-    resp = requests.get(url, params={"chat_id": channel, "user_id": user_id})
+    response = requests.get(url, params={"chat_id": channel, "user_id": user_id})
     try:
-        status = resp.json()["result"]["status"]
+        status = response.json().get("result", {}).get("status")
         return status in ["member", "administrator", "creator"]
     except:
         return False
@@ -42,15 +45,13 @@ def is_user_in_channel(user_id, channel):
 def webhook():
     data = request.get_json()
 
-    # Message handler
     if "message" in data:
         msg = data["message"]
         chat_id = msg["chat"]["id"]
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
-        user = users.find_one({"user_id": user_id})
-        if not user:
+        if not users.find_one({"user_id": user_id}):
             users.insert_one({"user_id": user_id, "referred_by": None, "rewarded": False})
 
         if text.startswith("/start"):
@@ -58,50 +59,41 @@ def webhook():
             if len(parts) > 1:
                 ref_id = int(parts[1])
                 if ref_id != user_id:
-                    existing = users.find_one({"user_id": user_id})
-                    if existing and not existing.get("referred_by"):
+                    user_data = users.find_one({"user_id": user_id})
+                    if not user_data.get("referred_by"):
                         users.update_one({"user_id": user_id}, {"$set": {"referred_by": ref_id}})
                         send_message(chat_id, "✅ Referral code applied!")
 
-            # Join buttons
-            buttons = []
-            for channel in VERIFY_CHANNELS:
-                buttons.append([{
-                    "text": f"Join {channel}",
-                    "url": f"https://t.me/{channel.replace('@', '')}"
-                }])
-            # Add verify button
-            buttons.append([{
-                "text": "✅ I've Joined",
-                "callback_data": "verify"
-            }])
-            send_message(
-                chat_id,
-                "👋 <b>Welcome to Actualearn!</b>\n\nPlease join all the required channels below to continue:",
-                buttons=buttons
-            )
+            buttons = [[{"text": f"Join {ch}", "url": f"https://t.me/{ch.replace('@','')}"}] for ch in VERIFY_CHANNELS]
+            buttons.append([{"text": "✅ I've Joined", "callback_data": "verify"}])
+            send_message(chat_id, "👋 <b>Welcome to Actualearn!</b>\n\nPlease join all channels below and then verify:", buttons)
 
-    # Callback handler for "verify"
-    if "callback_query" in data:
+    elif "callback_query" in data:
         query = data["callback_query"]
         user_id = query["from"]["id"]
         chat_id = query["message"]["chat"]["id"]
-        data_id = query["id"]
 
         if query["data"] == "verify":
-            all_joined = all(is_user_in_channel(user_id, channel) for channel in VERIFY_CHANNELS)
+            all_joined = all(is_user_in_channel(user_id, ch) for ch in VERIFY_CHANNELS)
+
             if all_joined:
                 user = users.find_one({"user_id": user_id})
-                if user and not user.get("rewarded", False):
+                if user and not user.get("rewarded"):
                     users.update_one({"user_id": user_id}, {"$set": {"rewarded": True}})
-                    send_message(chat_id, f"🎉 <b>Success!</b> You’ve received ₹{REWARD_AMOUNT} reward!")
+                    send_message(chat_id, f"🎉 <b>Verified!</b> You’ve received ₹{REWARD_AMOUNT} reward!")
 
-                    referrer_id = user.get("referred_by")
-                    if referrer_id:
-                        send_message(referrer_id, f"🎉 You got ₹{REWARD_AMOUNT} for referring a friend!")
+                    ref_id = user.get("referred_by")
+                    if ref_id:
+                        send_message(ref_id, f"🎉 Your friend joined! You’ve earned ₹{REWARD_AMOUNT} reward!")
                 else:
-                    send_message(chat_id, "✅ You’ve already verified and received your reward.")
+                    send_message(chat_id, "✅ You are already verified and rewarded.")
             else:
-                send_message(chat_id, "❌ Please join all the channels before verifying.")
+                send_message(chat_id, "❌ Please join all channels before verifying.")
+
+    return "ok", 200
+
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ Actualearn Bot is Live", 200                send_message(chat_id, "❌ Please join all the channels before verifying.")
 
     return "ok", 200
