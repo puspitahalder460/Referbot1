@@ -38,9 +38,16 @@ def is_user_in_channel(user_id, channel):
     except:
         return False
 
+# ✅ Root route to confirm Koyeb is running
+@app.route("/")
+def index():
+    return "✅ Actualearn is running."
+
+# ✅ Telegram Webhook route
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
+    print("Incoming webhook:", data)  # Debug log
 
     if "message" in data:
         msg = data["message"]
@@ -62,12 +69,13 @@ def webhook():
                         users.update_one({"user_id": user_id}, {"$set": {"referred_by": ref_id}})
                         send_message(chat_id, "✅ Referral code applied!")
 
-            # Create buttons for joining channels
+            # Create channel join buttons
             buttons = []
             for channel in VERIFY_CHANNELS:
+                channel_name = channel.replace("@", "")
                 buttons.append([{
-                    "text": f"Join {channel}",
-                    "url": f"https://t.me/{channel.replace('@', '')}"
+                    "text": f"✅ Join {channel_name}",
+                    "url": f"https://t.me/{channel_name}"
                 }])
 
             send_message(
@@ -77,3 +85,8 @@ def webhook():
             )
 
     return "ok", 200
+
+# ✅ Flask server runner for Koyeb
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
