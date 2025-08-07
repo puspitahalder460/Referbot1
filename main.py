@@ -38,17 +38,11 @@ def is_user_in_channel(user_id, channel):
     except:
         return False
 
-# ✅ Root route to confirm Koyeb is running
-@app.route("/")
-def index():
-    return "✅ Actualearn is running."
-
-# ✅ Telegram Webhook route
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
-    print("Incoming webhook:", data)  # Debug log
 
+    # Message handler
     if "message" in data:
         msg = data["message"]
         chat_id = msg["chat"]["id"]
@@ -69,24 +63,45 @@ def webhook():
                         users.update_one({"user_id": user_id}, {"$set": {"referred_by": ref_id}})
                         send_message(chat_id, "✅ Referral code applied!")
 
-            # Create channel join buttons
+            # Join buttons
             buttons = []
             for channel in VERIFY_CHANNELS:
-                channel_name = channel.replace("@", "")
                 buttons.append([{
-                    "text": f"✅ Join {channel_name}",
-                    "url": f"https://t.me/{channel_name}"
+                    "text": f"Join {channel}",
+                    "url": f"https://t.me/{channel.replace('@', '')}"
                 }])
-
+            # Add verify button
+            buttons.append([{
+                "text": "✅ I've Joined",
+                "callback_data": "verify"
+            }])
             send_message(
                 chat_id,
                 "👋 <b>Welcome to Actualearn!</b>\n\nPlease join all the required channels below to continue:",
                 buttons=buttons
             )
 
-    return "ok", 200
+    # Callback handler for "verify"
+    if "callback_query" in data:
+        query = data["callback_query"]
+        user_id = query["from"]["id"]
+        chat_id = query["message"]["chat"]["id"]
+        data_id = query["id"]
 
-# ✅ Flask server runner for Koyeb
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+        if query["data"] == "verify":
+            all_joined = all(is_user_in_channel(user_id, channel) for channel in VERIFY_CHANNELS)
+            if all_joined:
+                user = users.find_one({"user_id": user_id})
+                if user and not user.get("rewarded", False):
+                    users.update_one({"user_id": user_id}, {"$set": {"rewarded": True}})
+                    send_message(chat_id, f"🎉 <b>Success!</b> You’ve received ₹{REWARD_AMOUNT} reward!")
+
+                    referrer_id = user.get("referred_by")
+                    if referrer_id:
+                        send_message(referrer_id, f"🎉 You got ₹{REWARD_AMOUNT} for referring a friend!")
+                else:
+                    send_message(chat_id, "✅ You’ve already verified and received your reward.")
+            else:
+                send_message(chat_id, "❌ Please join all the channels before verifying.")
+
+    return "ok", 200
