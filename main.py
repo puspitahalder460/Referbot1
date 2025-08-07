@@ -1,102 +1,83 @@
-from flask import Flask, request
-import os
-import requests
-from pymongo import MongoClient
-from dotenv import load_dotenv
+from flask import Flask, request import requests import pymongo import time import os
 
-# Load .env variables
-load_dotenv()
+app = Flask(name)
 
-# Flask App
-app = Flask(__name__)
+ENV variables
 
-# Environment Variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
-VERIFY_CHANNELS = os.getenv("VERIFY_CHANNELS", "").split(",")
-REWARD_AMOUNT = int(os.getenv("REWARD_AMOUNT", 2))
+BOT_TOKEN = os.environ.get("BOT_TOKEN") MONGO_URI = os.environ.get("MONGO_URI") ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) REQUIRED_CHANNELS = os.environ.get("REQUIRED_CHANNELS", "").split(',')
 
-# Telegram API URL
-BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+MongoDB setup
 
-# MongoDB Setup
-client = MongoClient(MONGO_URI)
-db = client["actualearn"]
-users = db["users"]
+client = pymongo.MongoClient(MONGO_URI) db = client["actualearn"] users = db["users"]
 
-# Send message function
-def send_message(chat_id, text, buttons=None):
-    url = f"{BASE_URL}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    if buttons:
-        payload["reply_markup"] = {"inline_keyboard": buttons}
-    requests.post(url, json=payload)
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Check if user is in channel
-def is_user_in_channel(user_id, channel):
-    url = f"{BASE_URL}/getChatMember"
-    response = requests.get(url, params={"chat_id": channel, "user_id": user_id})
-    try:
-        status = response.json().get("result", {}).get("status")
-        return status in ["member", "administrator", "creator"]
-    except:
-        return False
+Helper functions
 
-# Telegram Webhook Handler
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json()
+def send_message(chat_id, text, reply_markup=None): data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"} if reply_markup: data["reply_markup"] = reply_markup requests.post(f"{TELEGRAM_API}/sendMessage", json=data)
 
-    if "message" in data:
-        msg = data["message"]
-        chat_id = msg["chat"]["id"]
-        user_id = msg["from"]["id"]
-        text = msg.get("text", "")
+def get_user(user_id): return users.find_one({"user_id": user_id})
 
-        if not users.find_one({"user_id": user_id}):
-            users.insert_one({"user_id": user_id, "referred_by": None, "rewarded": False})
+def is_user_joined_all_channels(user_id): for channel in REQUIRED_CHANNELS: url = f"{TELEGRAM_API}/getChatMember?chat_id={channel}&user_id={user_id}" r = requests.get(url).json() status = r.get("result", {}).get("status", "left") if status not in ["member", "administrator", "creator"]: return False return True
 
-        if text.startswith("/start"):
-            parts = text.split()
-            if len(parts) > 1:
-                ref_id = int(parts[1])
-                if ref_id != user_id:
-                    user_data = users.find_one({"user_id": user_id})
-                    if not user_data.get("referred_by"):
-                        users.update_one({"user_id": user_id}, {"$set": {"referred_by": ref_id}})
-                        send_message(chat_id, "✅ Referral code applied!")
+@app.route(f"/{BOT_TOKEN}", methods=["POST"]) def webhook(): data = request.get_json()
 
-            buttons = [[{"text": f"Join {ch}", "url": f"https://t.me/{ch.replace('@','')}"}] for ch in VERIFY_CHANNELS]
-            buttons.append([{"text": "✅ I've Joined", "callback_data": "verify"}])
-            send_message(chat_id, "👋 <b>Welcome to Actualearn!</b>\n\nPlease join all channels below and then verify:", buttons)
+if "message" in data:
+    message = data["message"]
+    text = message.get("text", "")
+    user_id = message["from"]["id"]
+    chat_id = message["chat"]["id"]
+    username = message["from"].get("username", "")
 
-    elif "callback_query" in data:
-        query = data["callback_query"]
-        user_id = query["from"]["id"]
-        chat_id = query["message"]["chat"]["id"]
+    user = get_user(user_id)
 
-        if query["data"] == "verify":
-            all_joined = all(is_user_in_channel(user_id, ch) for ch in VERIFY_CHANNELS)
+    if text == "/start":
+        if not user:
+            users.insert_one({"user_id": user_id, "username": username, "balance": 0, "referrer": None, "awaiting_upi": False})
 
-            if all_joined:
-                user = users.find_one({"user_id": user_id})
-                if user and not user.get("rewarded"):
-                    users.update_one({"user_id": user_id}, {"$set": {"rewarded": True}})
-                    send_message(chat_id, f"🎉 <b>Verified!</b> You’ve received ₹{REWARD_AMOUNT} reward!")
+        if not is_user_joined_all_channels(user_id):
+            buttons = [[{"text": "🔗 Join Channel", "url": f"https://t.me/{channel.replace('@', '')}"}] for channel in REQUIRED_CHANNELS]
+            buttons.append([{"text": "✅ I've Joined", "callback_data": "verify_join"}])
+            reply_markup = {"inline_keyboard": buttons}
+            send_message(chat_id, "👋 Welcome to Actualearn! Join the required channels to continue.", reply_markup)
+            return "", 200
 
-                    ref_id = user.get("referred_by")
-                    if ref_id:
-                        send_message(ref_id, f"🎉 Your friend joined! You’ve earned ₹{REWARD_AMOUNT} reward!")
-                else:
-                    send_message(chat_id, "✅ You are already verified and rewarded.")
+        send_message(chat_id, "🎉 You're already verified! Use /balance or /withdraw.")
+
+    elif text == "/balance":
+        balance = user.get("balance", 0) if user else 0
+        send_message(chat_id, f"💰 Your Balance: ₹{balance}")
+
+    elif text == "/withdraw":
+        if user:
+            balance = user.get("balance", 0)
+            last_withdrawal = user.get("last_withdrawal", 0)
+            now = time.time()
+
+            if now - last_withdrawal < 86400:
+                send_message(chat_id, "❌ You can only withdraw once every 24 hours.")
+            elif balance >= 16:
+                send_message(chat_id, "📥 Please send your UPI ID to proceed with the withdrawal.")
+                users.update_one({"user_id": user_id}, {"$set": {"awaiting_upi": True}})
             else:
-                send_message(chat_id, "❌ Please join all the channels before verifying.")
+                send_message(chat_id, "❌ Minimum withdrawal is ₹16. Earn more by referring others.")
+        else:
+            send_message(chat_id, "ℹ️ You are not registered yet. Send /start first.")
 
-    return "ok", 200
+    elif user and user.get("awaiting_upi"):
+        upi_id = text.strip()
+        balance = user.get("balance", 0)
+
+        send_message(chat_id, f"✅ Withdrawal request received.\n💰 Amount: ₹{balance}\n🔢 UPI: {upi_id}")
+
+        if ADMIN_ID:
+            send_message(ADMIN_ID, f"📥 <b>Withdraw Request</b>\n👤 User: @{username} ({user_id})\n💰 Amount: ₹{balance}\n🔢 UPI ID: <code>{upi_id}</code>")
+
+        users.update_one({"user_id": user_id}, {"$set": {"balance": 0, "awaiting_upi": False, "last_withdrawal": time.time()}})
+
+elif "callback_query" in data:
+    query = data
+
 
 # Health Check Route
 @app.route("/", methods=["GET"])
