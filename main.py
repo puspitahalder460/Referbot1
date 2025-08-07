@@ -58,3 +58,7 @@ def webhook():
             send_message(chat_id, "👋 Welcome to Actualearn! Join the required channels to continue.")
 
     return "ok", 200
+
+# ✅ Add this block to run Flask app
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
