@@ -18,9 +18,16 @@ client = MongoClient(MONGO_URI)
 db = client["actualearn"]
 users = db["users"]
 
-def send_message(chat_id, text):
+def send_message(chat_id, text, buttons=None):
     url = f"{BASE_URL}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+    requests.post(url, json=payload)
 
 def is_user_in_channel(user_id, channel):
     url = f"{BASE_URL}/getChatMember"
@@ -34,7 +41,7 @@ def is_user_in_channel(user_id, channel):
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
-    
+
     if "message" in data:
         msg = data["message"]
         chat_id = msg["chat"]["id"]
@@ -54,11 +61,19 @@ def webhook():
                     if existing and not existing.get("referred_by"):
                         users.update_one({"user_id": user_id}, {"$set": {"referred_by": ref_id}})
                         send_message(chat_id, "✅ Referral code applied!")
-            
-            send_message(chat_id, "👋 Welcome to Actualearn! Join the required channels to continue.")
+
+            # Create buttons for joining channels
+            buttons = []
+            for channel in VERIFY_CHANNELS:
+                buttons.append([{
+                    "text": f"Join {channel}",
+                    "url": f"https://t.me/{channel.replace('@', '')}"
+                }])
+
+            send_message(
+                chat_id,
+                "👋 <b>Welcome to Actualearn!</b>\n\nPlease join all the required channels below to continue:",
+                buttons=buttons
+            )
 
     return "ok", 200
-
-# ✅ Add this block to run Flask app
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
