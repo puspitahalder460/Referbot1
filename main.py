@@ -1,66 +1,114 @@
-from flask import Flask, request, jsonify import requests import os from pymongo import MongoClient
+from flask import Flask, request
+import requests
+import os
+from pymongo import MongoClient
+from datetime import datetime
 
-app = Flask(name)
+app = Flask(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URL = os.getenv("MONGO_URL")
 
-client = MongoClient(os.getenv("MONGO_URI")) db = client['actualearn'] users_collection = db['users']
+client = MongoClient(MONGO_URL)
+db = client["ActualearnBot"]
+users = db["users"]
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+VERIFY_CHANNELS = ["@yourchannel1", "@yourchannel2"]
+REWARD_AMOUNT = 2
+MIN_WITHDRAW = 16
 
-REQUIRED_CHANNELS = [ "@YourChannel1",  # replace with your channel usernames "@YourChannel2" ]
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
-MIN_WITHDRAW_AMOUNT = 16 DAILY_WITHDRAW_LIMIT = 1
+def user_joined_all_channels(user_id):
+    for channel in VERIFY_CHANNELS:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+        res = requests.get(url, params={"chat_id": channel, "user_id": user_id})
+        data = res.json()
+        if data["result"]["status"] not in ["member", "administrator", "creator"]:
+            return False
+    return True
 
----------------------- Helper Functions ----------------------
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json()
 
-def send_message(chat_id, text): requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={ "chat_id": chat_id, "text": text })
+    if "message" in data:
+        message = data["message"]
+        chat_id = message["chat"]["id"]
+        user_id = message["from"]["id"]
+        text = message.get("text", "")
+        first_name = message["from"].get("first_name", "")
 
-def is_user_in_channels(user_id): for channel in REQUIRED_CHANNELS: response = requests.get(f"{TELEGRAM_API_URL}/getChatMember", params={ "chat_id": channel, "user_id": user_id }) data = response.json() if data.get("result", {}).get("status") not in ["member", "administrator", "creator"]: return False return True
+        user = users.find_one({"user_id": user_id})
+        if not user:
+            users.insert_one({
+                "user_id": user_id,
+                "balance": 0,
+                "referrals": [],
+                "withdraws": [],
+                "last_withdraw": None
+            })
 
-def get_user(chat_id): user = users_collection.find_one({"chat_id": chat_id}) if not user: users_collection.insert_one({"chat_id": chat_id, "balance": 0, "withdrawals_today": 0}) return {"chat_id": chat_id, "balance": 0, "withdrawals_today": 0} return user
+        if text.startswith("/start"):
+            args = text.split()
+            if len(args) > 1:
+                ref_id = int(args[1])
+                if ref_id != user_id:
+                    referrer = users.find_one({"user_id": ref_id})
+                    if referrer and user_id not in referrer.get("referrals", []):
+                        users.update_one({"user_id": ref_id}, {
+                            "$inc": {"balance": REWARD_AMOUNT},
+                            "$push": {"referrals": user_id}
+                        })
+                        send_message(ref_id, f"🎉 You earned ₹{REWARD_AMOUNT} for referring {first_name}!")
+            send_message(chat_id, "👋 Welcome to Actualearn!\nUse /verify to get ₹2 for joining our channels.")
 
----------------------- Routes ----------------------
+        elif text == "/verify":
+            if user_joined_all_channels(user_id):
+                user = users.find_one({"user_id": user_id})
+                if not user.get("verified", False):
+                    users.update_one({"user_id": user_id}, {
+                        "$inc": {"balance": REWARD_AMOUNT},
+                        "$set": {"verified": True}
+                    })
+                    send_message(chat_id, f"✅ Channels verified!\nYou received ₹{REWARD_AMOUNT}.")
+                else:
+                    send_message(chat_id, "✅ Already verified.")
+            else:
+                send_message(chat_id, "❌ Please join all the channels before verifying.")
 
-@app.route("/webhook", methods=["POST"]) def webhook(): if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET_TOKEN: return "Unauthorized", 403
+        elif text == "/balance":
+            user = users.find_one({"user_id": user_id})
+            balance = user.get("balance", 0)
+            send_message(chat_id, f"💰 Your balance: ₹{balance}")
 
-update = request.get_json()
+        elif text == "/withdraw":
+            user = users.find_one({"user_id": user_id})
+            now = datetime.utcnow()
+            last_withdraw = user.get("last_withdraw")
+            if last_withdraw:
+                diff = (now - last_withdraw).days
+                if diff < 1:
+                    send_message(chat_id, "⏳ You can withdraw only once per day.")
+                    return "ok", 200
 
-if "message" in update:
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "")
+            if user["balance"] >= MIN_WITHDRAW:
+                users.update_one({"user_id": user_id}, {
+                    "$inc": {"balance": -MIN_WITHDRAW},
+                    "$push": {"withdraws": {"amount": MIN_WITHDRAW, "time": now}},
+                    "$set": {"last_withdraw": now}
+                })
+                send_message(chat_id, f"✅ ₹{MIN_WITHDRAW} withdrawal requested. You'll receive it soon.")
+            else:
+                send_message(chat_id, f"❌ Minimum ₹{MIN_WITHDRAW} required to withdraw.")
 
-    if not is_user_in_channels(chat_id):
-        send_message(chat_id, "❌ Please join all the channels before verifying.")
-        return jsonify(status="not_verified")
+    return "ok", 200
 
-    if text == "/start":
-        send_message(chat_id, "👋 Welcome to Actualearn! You have successfully joined all channels.")
+@app.route("/")
+def home():
+    return "✅ Actualearn Bot is Live", 200
 
-    elif text == "/balance":
-        user = get_user(chat_id)
-        send_message(chat_id, f"💰 Your balance is ₹{user['balance']}")
-
-    elif text == "/withdraw":
-        user = get_user(chat_id)
-        if user["balance"] < MIN_WITHDRAW_AMOUNT:
-            send_message(chat_id, f"❌ Minimum withdrawal is ₹{MIN_WITHDRAW_AMOUNT}.")
-        elif user["withdrawals_today"] >= DAILY_WITHDRAW_LIMIT:
-            send_message(chat_id, "❌ You have reached your daily withdrawal limit.")
-        else:
-            new_balance = user["balance"] - MIN_WITHDRAW_AMOUNT
-            users_collection.update_one(
-                {"chat_id": chat_id},
-                {"$set": {"balance": new_balance}, "$inc": {"withdrawals_today": 1}}
-            )
-            send_message(chat_id, f"✅ ₹{MIN_WITHDRAW_AMOUNT} withdrawn successfully!")
-
-return jsonify(status="ok")
-
-@app.route("/", methods=["GET"]) def home(): return "✅ Actualearn Bot is Live", 200
-
----------------------- Main ----------------------
-
-if name == "main": app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
+if __name__ == "__main__":
+    app.run()
