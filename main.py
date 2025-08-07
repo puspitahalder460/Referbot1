@@ -4,23 +4,27 @@ import requests
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
+# Load .env variables
 load_dotenv()
 
+# Flask App
 app = Flask(__name__)
 
-# Load Environment Variables
+# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-VERIFY_CHANNELS = os.getenv("VERIFY_CHANNELS", "").split(",")
 MONGO_URI = os.getenv("MONGO_URI")
+VERIFY_CHANNELS = os.getenv("VERIFY_CHANNELS", "").split(",")
 REWARD_AMOUNT = int(os.getenv("REWARD_AMOUNT", 2))
 
+# Telegram API URL
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# MongoDB
+# MongoDB Setup
 client = MongoClient(MONGO_URI)
 db = client["actualearn"]
 users = db["users"]
 
+# Send message function
 def send_message(chat_id, text, buttons=None):
     url = f"{BASE_URL}/sendMessage"
     payload = {
@@ -32,6 +36,7 @@ def send_message(chat_id, text, buttons=None):
         payload["reply_markup"] = {"inline_keyboard": buttons}
     requests.post(url, json=payload)
 
+# Check if user is in channel
 def is_user_in_channel(user_id, channel):
     url = f"{BASE_URL}/getChatMember"
     response = requests.get(url, params={"chat_id": channel, "user_id": user_id})
@@ -41,6 +46,7 @@ def is_user_in_channel(user_id, channel):
     except:
         return False
 
+# Telegram Webhook Handler
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -88,12 +94,11 @@ def webhook():
                 else:
                     send_message(chat_id, "✅ You are already verified and rewarded.")
             else:
-                send_message(chat_id, "❌ Please join all channels before verifying.")
+                send_message(chat_id, "❌ Please join all the channels before verifying.")
 
     return "ok", 200
 
+# Health Check Route
 @app.route("/", methods=["GET"])
 def home():
-    return "✅ Actualearn Bot is Live", 200                send_message(chat_id, "❌ Please join all the channels before verifying.")
-
-    return "ok", 200
+    return "✅ Actualearn Bot is Live", 200
